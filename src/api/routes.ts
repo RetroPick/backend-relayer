@@ -73,7 +73,9 @@ export async function registerApiRoutes(app: FastifyInstance): Promise<void> {
     const state = getSession(sessionId as Hex);
     if (!state) return reply.status(404).send({ error: "Session not found" });
     const acc = getOrCreateAccount(state, userAddress);
-    acc.balance += BigInt(Math.floor(amount * 1e6));
+    const credit = BigInt(Math.floor(amount * 1e6));
+    acc.balance += credit;
+    acc.initialBalance = (acc.initialBalance ?? 0n) + credit;
     setSession(sessionId as Hex, state);
     return { ok: true, balance: acc.balance.toString() };
   });

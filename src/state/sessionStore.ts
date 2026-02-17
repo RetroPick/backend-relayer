@@ -10,6 +10,8 @@ export interface AccountState {
   balance: bigint;
   positions: bigint[];  // outcome share holdings
   feeAccrued: bigint;
+  /** Balance at session start (sum of credits before trades); used for checkpoint cashDelta. */
+  initialBalance?: bigint;
 }
 
 export interface SessionState {
