@@ -24,8 +24,6 @@ The relayer does **not** send checkpoint submit transactions. It prepares signed
 ## Install
 
 ```bash
-bun install
-# or
 npm install
 ```
 
@@ -44,8 +42,6 @@ Copy `.env.example` to `.env`:
 ## Run
 
 ```bash
-bun run dev
-# or
 npm run dev
 ```
 
