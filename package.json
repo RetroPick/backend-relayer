@@ -8,6 +8,7 @@
     "test": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:integration": "vitest run test/integration",
+    "test:payload": "npx tsx scripts/testPayload.ts",
     "sync-abi": "cp ../../packages/contracts/docs/abi/ChannelSettlement.json src/contracts/abis/"
   },
   "dependencies": {

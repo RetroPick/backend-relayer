@@ -116,3 +116,43 @@ Commit the updated `src/contracts/abis/ChannelSettlement.json` before deploying.
 | Connection refused from frontend | CORS or wrong URL | Relayer uses `origin: true`; verify frontend URL is correct |
 | Nonce sync fails | Wrong `RPC_URL` or `CHAIN_ID` | Use chain-matching RPC and CHAIN_ID |
 | Finalize reverts | Challenge window not elapsed | Wait 30 min after checkpoint submit, or check `challengeDeadline` |
+
+API: https://railway.com/project/51e455a9-a345-4552-97c9-60420fee6bbf
+
+(.venv) asyam@LAPTOP-IBEUNTHH:~/dev/Project/RetroPick/sc-cre-workflow-chainlink/apps/relayer$ cd apps/relayer
+npm run test:payload
+-bash: cd: apps/relayer: No such file or directory
+
+> retropick-relayer@1.0.0 test:payload
+> npx tsx scripts/testPayload.ts
+
+Testing relayer at https://backend-relayer-production.up.railway.app
+
+1. GET /health
+   OK: { ok: true }
+
+2. GET /debug
+   OK: {
+  port: '8790',
+  channelSettlementConfigured: true,
+  operatorConfigured: true
+}
+
+3. POST /api/session/create
+   OK
+
+4. POST /api/session/credit
+   OK
+
+5. POST /api/trade/buy
+   OK
+
+6. GET /api/session/:sessionId/account/:address
+   OK: {
+  address: '0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266',
+  balance: '9994823802',
+  positions: [ '10000000', '0' ],
+  initialBalance: '10000000000'
+}
+
+--- All payload tests passed ---

@@ -93,6 +93,16 @@ The relayer uses `ChannelSettlement.json` from `packages/contracts/docs/abi/`. A
 npm run sync-abi
 ```
 
+## Payload test (deployed relayer)
+
+Test the deployed relayer API with a simple create → credit → buy flow:
+
+```bash
+npm run test:payload
+# Or with custom URL:
+npx tsx scripts/testPayload.ts https://your-relayer.up.railway.app
+```
+
 ## Tests
 
 ```bash
