@@ -26,6 +26,14 @@ export interface SessionState {
   prevStateHash: Hex | null;
   feeParams: { tau: number };  // fee rate 0..1
   resolveTime?: number;  // Unix timestamp when market resolves (for CRE finalization)
+  /** Unix timestamp of last trade; used for checkpoint lastTradeAt (must be <= tradingClose at finalize). */
+  lastTradeAt?: number;
+  /** Risk caps (optional). */
+  riskCaps?: {
+    maxOI?: number; // max open interest Σ max(0, q_i)
+    maxPosPerUser?: number; // max position per outcome per user (in outcome units)
+    maxOddsImpactBps?: number; // session default for maxOddsImpact
+  };
 }
 
 export interface SessionHeader {

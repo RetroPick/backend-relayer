@@ -63,6 +63,14 @@ export function costBuy(q: number[], k: number, delta: number, params: LMSRParam
 }
 
 /**
+ * CostSell(q, k, δ) = C(q - δ·e_k) - C(q) = CostBuy(q, k, -δ)
+ * Negative cost = trader receives tokens.
+ */
+export function costSell(q: number[], k: number, delta: number, params: LMSRParams): number {
+  return costBuy(q, k, -delta, params);
+}
+
+/**
  * CostSwap(q, i, j, δ) = C(q - δ·e_i + δ·e_j) - C(q)
  */
 export function costSwap(q: number[], i: number, j: number, delta: number, params: LMSRParams): number {

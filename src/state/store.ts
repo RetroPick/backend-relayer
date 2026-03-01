@@ -30,3 +30,8 @@ export function getReadyForFinalization(): SessionState[] {
 export function getAllSessions(): SessionState[] {
   return Array.from(sessions.values());
 }
+
+/** Clear all sessions (for tests only). */
+export function clearAllSessions(): void {
+  sessions.clear();
+}

@@ -7,6 +7,7 @@ import { keccak256, toHex } from "viem";
 import type { Hex } from "viem";
 import { hashSessionState } from "../state/sessionStore.js";
 import { getAllSessions } from "../state/store.js";
+import { sessionStateToDeltas } from "./buildCheckpointPayload.js";
 
 export interface CheckpointPayload {
   sessionId: Hex;
@@ -16,6 +17,8 @@ export interface CheckpointPayload {
   accountsRoot: Hex;
   nonce: string;
   timestamp: number;
+  /** True if session has checkpointable deltas (CRE can fetch full spec at GET /cre/checkpoints/:sessionId). */
+  hasDeltas: boolean;
 }
 
 function simpleAccountsRoot(accounts: Map<string, { balance: bigint; positions: bigint[] }>): Hex {
@@ -39,6 +42,7 @@ export function buildCheckpointPayloads(): CheckpointPayload[] {
         ])
       )
     );
+    const deltas = sessionStateToDeltas(state);
     return {
       sessionId: state.sessionId,
       marketId: state.marketId,
@@ -47,6 +51,7 @@ export function buildCheckpointPayloads(): CheckpointPayload[] {
       accountsRoot,
       nonce: state.nonce.toString(),
       timestamp: now,
+      hasDeltas: deltas.length > 0,
     };
   });
 }

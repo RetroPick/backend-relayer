@@ -206,28 +206,30 @@ export async function buildCheckpointPayload(opts: BuildCheckpointPayloadOpts): 
     "(uint256 marketId, bytes32 sessionId, uint64 nonce, uint64 validAfter, uint64 validBefore, uint48 lastTradeAt, bytes32 stateHash, bytes32 deltasHash, bytes32 riskHash)";
   const DELTA_ABI = "(address user, uint32 outcomeIndex, int128 sharesDelta, int128 cashDelta)";
 
+  const checkpointTuple = {
+    marketId: cp.marketId,
+    sessionId: cp.sessionId,
+    nonce: cp.nonce,
+    validAfter: cp.validAfter ?? 0n,
+    validBefore: cp.validBefore ?? 0n,
+    lastTradeAt: BigInt(cp.lastTradeAt ?? 0),
+    stateHash: cp.stateHash,
+    deltasHash: cp.deltasHash,
+    riskHash: cp.riskHash ?? "0x0000000000000000000000000000000000000000000000000000000000000000",
+  };
+  const deltasFormatted = deltas.map((d) => ({
+    user: d.user,
+    outcomeIndex: d.outcomeIndex,
+    sharesDelta: d.sharesDelta,
+    cashDelta: d.cashDelta,
+  }));
   const payload = encodeAbiParameters(
     parseAbiParameters(
       `(${CHECKPOINT_ABI}), (${DELTA_ABI})[], bytes, address[], bytes[]`
     ),
     [
-      {
-        marketId: cp.marketId,
-        sessionId: cp.sessionId,
-        nonce: cp.nonce,
-        validAfter: cp.validAfter ?? 0n,
-        validBefore: cp.validBefore ?? 0n,
-        lastTradeAt: BigInt(cp.lastTradeAt ?? 0),
-        stateHash: cp.stateHash,
-        deltasHash: cp.deltasHash,
-        riskHash: cp.riskHash ?? "0x0000000000000000000000000000000000000000000000000000000000000000",
-      },
-      deltas.map((d) => ({
-        user: d.user,
-        outcomeIndex: d.outcomeIndex,
-        sharesDelta: d.sharesDelta,
-        cashDelta: d.cashDelta,
-      })),
+      checkpointTuple,
+      deltasFormatted,
       operatorSig,
       users,
       userSigsArr,
