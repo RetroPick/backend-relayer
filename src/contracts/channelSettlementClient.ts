@@ -2,7 +2,7 @@
  * ChannelSettlement contract client for relayer chain integration.
  * Provides latestNonce (read) and finalizeCheckpoint / cancelPendingCheckpoint (write).
  */
-import { createPublicClient, createWalletClient, http } from "viem";
+import { createPublicClient, createWalletClient, http, keccak256, encodeAbiParameters, parseAbiParameters } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import type { Address, Hash, Hex } from "viem";
 import ChannelSettlementAbi from "./abis/ChannelSettlement.json";
@@ -58,6 +58,59 @@ export function getChannelSettlementAddress(): Address | null {
   const addr = process.env.CHANNEL_SETTLEMENT_ADDRESS;
   if (!addr || addr === "0x0000000000000000000000000000000000000000") return null;
   return addr as Address;
+}
+
+const CHALLENGE_WINDOW_SECONDS = 30 * 60;
+const CANCEL_DELAY_SECONDS = 6 * 60 * 60;
+
+function computePendingKey(marketId: bigint, sessionId: Hex): Hex {
+  return keccak256(
+    encodeAbiParameters(parseAbiParameters("uint256, bytes32"), [marketId, sessionId])
+  ) as Hex;
+}
+
+export interface PendingCheckpointInfo {
+  exists: boolean;
+  createdAt: number;
+  canFinalize: boolean;
+  canCancel: boolean;
+}
+
+/**
+ * Read pending checkpoint info for (marketId, sessionId) from ChannelSettlement.
+ * Used to pre-filter finalize/cancel calls.
+ */
+export async function readPendingCheckpointInfo(
+  marketId: bigint,
+  sessionId: Hex
+): Promise<PendingCheckpointInfo> {
+  const address = getChannelSettlementAddress();
+  if (!address) {
+    return { exists: false, createdAt: 0, canFinalize: false, canCancel: false };
+  }
+
+  const client = ensurePublicClient();
+  const key = computePendingKey(marketId, sessionId);
+  const result = await client.readContract({
+    address,
+    abi: ChannelSettlementAbi as any,
+    functionName: "pendingByKey",
+    args: [key],
+  }) as [bigint, bigint, bigint, Hex, Hex, Hex, boolean, Address, bigint];
+  const [/* nonce */, /* challengeDeadline */, /* lastTradeAt */, /* stateHash */,
+    /* deltasHash */, /* riskHash */, exists, /* settlementAsset */, createdAt] = result;
+
+  const now = Math.floor(Date.now() / 1000);
+  const createdAtNum = Number(createdAt);
+  const canFinalize = exists && now >= createdAtNum + CHALLENGE_WINDOW_SECONDS;
+  const canCancel = exists && now >= createdAtNum + CANCEL_DELAY_SECONDS;
+
+  return {
+    exists,
+    createdAt: createdAtNum,
+    canFinalize,
+    canCancel,
+  };
 }
 
 /**

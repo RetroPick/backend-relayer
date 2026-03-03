@@ -73,6 +73,7 @@ Pass `riskCaps` in `POST /api/session/create`:
 ### CRE (workflow integration)
 
 - `GET /cre/sessions` – Sessions ready for finalization (resolveTime <= now)
+- `GET /cre/markets` – Session-to-marketId mapping for frontend alignment
 - `GET /cre/sessions/:sessionId` – Session payload for legacy SessionFinalizer path
 - `GET /cre/checkpoints` – Checkpoint metadata list (sessionId, marketId, nonce, hasDeltas)
 - `GET /cre/checkpoints/:sessionId` – Checkpoint spec for ChannelSettlement (digest, users, deltas); syncs nonce from chain

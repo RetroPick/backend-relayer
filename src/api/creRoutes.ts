@@ -6,9 +6,10 @@
  * GET /cre/checkpoints/:sessionId - get checkpoint spec for ChannelSettlement (digest, users, etc.)
  * POST /cre/checkpoints/:sessionId - build full checkpoint payload with operator + user sigs
  * POST /cre/finalize/:sessionId - submit finalizeCheckpoint tx (permissionless; relayer convenience)
+ * POST /cre/cancel/:sessionId - submit cancelPendingCheckpoint tx (after 6 hr CANCEL_DELAY; permissionless)
  */
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
-import { getReadyForFinalization, getSession } from "../state/store.js";
+import { getReadyForFinalization, getSession, getAllSessions, setSession } from "../state/store.js";
 import { buildCheckpointPayloads } from "../settlement/checkpoint.js";
 import {
   sessionStateToPayload,
@@ -20,10 +21,17 @@ import {
   getCheckpointDigest,
   hashDeltas,
 } from "../settlement/buildCheckpointPayload.js";
-import { hashSessionState } from "../state/sessionStore.js";
+import { hashSessionState, createSessionState } from "../state/sessionStore.js";
+import { keccak256, encodeAbiParameters, parseAbiParameters } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import type { Hex } from "viem";
-import { readLatestNonce, finalizeCheckpoint } from "../contracts/channelSettlementClient.js";
+import {
+  readLatestNonce,
+  readPendingCheckpointInfo,
+  finalizeCheckpoint,
+  cancelPendingCheckpoint,
+} from "../contracts/channelSettlementClient.js";
+import { setCheckpointSigs, getCheckpointSigs } from "../state/sigStore.js";
 
 interface SessionIdParams {
   sessionId: string;
@@ -85,16 +93,106 @@ export async function registerCreRoutes(app: FastifyInstance): Promise<void> {
   );
 
   /**
+   * Get session-to-market mapping for frontend alignment.
+   * Returns markets with their sessionIds; frontend can use to align session creation with MarketRegistry.
+   */
+  app.get("/cre/markets", async (_req: FastifyRequest, _reply: FastifyReply) => {
+    const sessions = getAllSessions();
+    const byMarket = new Map<string, string[]>();
+    for (const s of sessions) {
+      const marketKey = s.marketId.toString();
+      const list = byMarket.get(marketKey) ?? [];
+      list.push(s.sessionId);
+      byMarket.set(marketKey, list);
+    }
+    const markets = Array.from(byMarket.entries()).map(([marketId, sessionIds]) => ({
+      marketId,
+      sessionIds,
+    }));
+    return { markets };
+  });
+
+  /**
+   * Create session for a market (CRE automation hook).
+   * Called by workflow after market creation to auto-create a trading session.
+   * Body: { marketId, vaultId, resolveTime, sessionId?, numOutcomes?, b? }
+   * If sessionId omitted, generates keccak256(marketId, vaultId, resolveTime, "cre").
+   */
+  app.post(
+    "/cre/sessions/create",
+    async (
+      req: FastifyRequest<{
+        Body: {
+          marketId: string | number;
+          vaultId: string;
+          resolveTime: number;
+          sessionId?: string;
+          numOutcomes?: number;
+          b?: number;
+          b0?: number;
+          alpha?: number;
+        };
+      }>,
+      reply: FastifyReply
+    ) => {
+      const { marketId, vaultId, resolveTime, sessionId: providedSessionId, numOutcomes, b, b0, alpha } = req.body;
+      if (marketId == null || !vaultId || resolveTime == null) {
+        return reply.status(400).send({
+          error: "marketId, vaultId, resolveTime required",
+        });
+      }
+      const marketIdBn = BigInt(marketId);
+      const vaultIdHex = vaultId as Hex;
+      const sessionId =
+        (providedSessionId as Hex) ||
+        (keccak256(
+          encodeAbiParameters(
+            parseAbiParameters("uint256, address, uint256, bytes32"),
+            [marketIdBn, vaultIdHex, BigInt(Math.floor(resolveTime)), "0x6372650000000000000000000000000000000000000000000000000000000000" as Hex]
+          )
+        ) as Hex);
+      if (getSession(sessionId)) {
+        return { ok: true, sessionId, existing: true };
+      }
+      const bParams = { b: b ?? 100, b0, alpha };
+      const state = createSessionState(sessionId, marketIdBn, vaultIdHex, numOutcomes ?? 2, bParams);
+      state.resolveTime = Math.floor(resolveTime);
+      setSession(sessionId, state);
+      return { ok: true, sessionId };
+    }
+  );
+
+  /**
    * Get checkpoint metadata for all active sessions.
+   * When CHANNEL_SETTLEMENT_ADDRESS and RPC_URL are set, enriches with pendingCheckpointCreatedAt,
+   * canFinalize, canCancel for smarter filtering by CRE workflow.
    */
   app.get("/cre/checkpoints", async (_req: FastifyRequest, reply: FastifyReply) => {
     const payloads = buildCheckpointPayloads();
-    return {
-      checkpoints: payloads.map((p) => ({
-        ...p,
-        marketId: p.marketId.toString(),
-      })),
-    };
+    const hasChainConfig =
+      process.env.CHANNEL_SETTLEMENT_ADDRESS && process.env.RPC_URL;
+
+    const checkpoints = await Promise.all(
+      payloads.map(async (p) => {
+        const base = { ...p, marketId: p.marketId.toString() };
+        if (!hasChainConfig || !p.hasDeltas) {
+          return base;
+        }
+        try {
+          const pending = await readPendingCheckpointInfo(p.marketId, p.sessionId);
+          return {
+            ...base,
+            pendingCheckpointCreatedAt: pending.exists ? pending.createdAt : undefined,
+            canFinalize: pending.canFinalize,
+            canCancel: pending.canCancel,
+          };
+        } catch {
+          return base;
+        }
+      })
+    );
+
+    return { checkpoints };
   });
 
   /**
@@ -193,6 +291,47 @@ export async function registerCreRoutes(app: FastifyInstance): Promise<void> {
   );
 
   /**
+   * Store user signatures for checkpoint (frontend or signing service).
+   * CRE workflow fetches via GET before POST to build payload. TTL: 10 min.
+   */
+  app.post(
+    "/cre/checkpoints/:sessionId/sigs",
+    async (
+      req: FastifyRequest<{ Params: SessionIdParams; Body: CheckpointPostBody }>,
+      reply: FastifyReply
+    ) => {
+      const { sessionId } = req.params;
+      const { userSigs } = req.body ?? {};
+      if (!userSigs || typeof userSigs !== "object") {
+        return reply.status(400).send({ error: "userSigs object required" });
+      }
+      const normalized: Record<string, Hex> = {};
+      for (const [addr, sig] of Object.entries(userSigs)) {
+        if (sig) normalized[addr.toLowerCase()] = sig as Hex;
+      }
+      if (Object.keys(normalized).length === 0) {
+        return reply.status(400).send({ error: "At least one userSig required" });
+      }
+      setCheckpointSigs(sessionId, normalized);
+      return { ok: true, sessionId };
+    }
+  );
+
+  /**
+   * Get stored user signatures for checkpoint. CRE workflow fetches before POST.
+   * Returns 404 if none stored or expired.
+   */
+  app.get(
+    "/cre/checkpoints/:sessionId/sigs",
+    async (req: FastifyRequest<{ Params: SessionIdParams }>, reply: FastifyReply) => {
+      const { sessionId } = req.params;
+      const sigs = getCheckpointSigs(sessionId);
+      if (!sigs) return reply.status(404).send({ error: "No pending sigs for session" });
+      return { userSigs: sigs };
+    }
+  );
+
+  /**
    * Build full checkpoint payload for ChannelSettlement.
    * Body: { userSigs: { [address]: "0x..." } }
    * Operator signs from OPERATOR_PRIVATE_KEY. Returns 0x03-prefixed payload for CRE.
@@ -208,6 +347,12 @@ export async function registerCreRoutes(app: FastifyInstance): Promise<void> {
       const { userSigs: userSigsRaw } = req.body ?? {};
       const state = getSession(sessionId as Hex);
       if (!state) return reply.status(404).send({ error: "Session not found" });
+
+      // Fallback to stored sigs (from POST /cre/checkpoints/:sessionId/sigs) if body has none
+      let userSigsFromBody = userSigsRaw;
+      if ((!userSigsFromBody || Object.keys(userSigsFromBody).length === 0) && getCheckpointSigs(sessionId)) {
+        userSigsFromBody = getCheckpointSigs(sessionId)!;
+      }
 
       const channelAddr = process.env.CHANNEL_SETTLEMENT_ADDRESS as Hex | undefined;
       const operatorPk = process.env.OPERATOR_PRIVATE_KEY as Hex | undefined;
@@ -237,8 +382,8 @@ export async function registerCreRoutes(app: FastifyInstance): Promise<void> {
       }
 
       const userSigs = new Map<string, Hex>();
-      if (userSigsRaw && typeof userSigsRaw === "object") {
-        for (const [addr, sig] of Object.entries(userSigsRaw)) {
+      if (userSigsFromBody && typeof userSigsFromBody === "object") {
+        for (const [addr, sig] of Object.entries(userSigsFromBody)) {
           if (sig) userSigs.set(addr.toLowerCase(), sig as Hex);
         }
       }
@@ -348,6 +493,50 @@ export async function registerCreRoutes(app: FastifyInstance): Promise<void> {
         }
         return reply.status(500).send({
           error: "Finalize failed: " + msg,
+        });
+      }
+    }
+  );
+
+  /**
+   * Submit cancelPendingCheckpoint tx. Callable after CANCEL_DELAY (6 hours) from pending createdAt.
+   * Permissionless; releases stuck reserves when checkpoint was submitted but never finalized.
+   */
+  app.post(
+    "/cre/cancel/:sessionId",
+    async (
+      req: FastifyRequest<{ Params: SessionIdParams }>,
+      reply: FastifyReply
+    ) => {
+      const { sessionId } = req.params;
+      const state = getSession(sessionId as Hex);
+      if (!state) return reply.status(404).send({ error: "Session not found" });
+
+      const pk = process.env.FINALIZER_PRIVATE_KEY ?? process.env.OPERATOR_PRIVATE_KEY;
+      if (!pk || !process.env.RPC_URL) {
+        return reply.status(503).send({
+          error: "RPC_URL and FINALIZER_PRIVATE_KEY (or OPERATOR_PRIVATE_KEY) required",
+        });
+      }
+
+      try {
+        const txHash = await cancelPendingCheckpoint(
+          state.marketId,
+          state.sessionId as Hex
+        );
+        return { txHash, ok: true };
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (msg.includes("CancelTooEarly") || msg.includes("TooEarly")) {
+          return reply.status(400).send({
+            error: "CANCEL_DELAY (6 hours) not elapsed; cancel later",
+          });
+        }
+        if (msg.includes("NoPending") || msg.includes("pending")) {
+          return reply.status(400).send({ error: "No pending checkpoint to cancel" });
+        }
+        return reply.status(500).send({
+          error: "Cancel failed: " + msg,
         });
       }
     }
